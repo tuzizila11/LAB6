@@ -67,11 +67,85 @@
 //******************************************************************************
 
 
-gkufglkgflfk goitfipgugifofvlvgubibkjlkj
-
 #include <msp430.h>
 
+/* Global variables */
+unsigned int i = 0, count = 0;
+unsigned int data[10];
+volatile char txBuffer[6];
+
+/* Function Prototypes */
+void portInit(void);
+unsigned int sampleADC(void);
+void itoa(unsigned int);
+
 int main(void)
+{
+    portInit();
+    while (1)
+    {
+//        unsigned int adcVal = sampleADC();
+//        itoa(adcVal);
+//        __delay_cycles(10000);
+    }
+}
+
+
+#pragma vector=USCIAB0TX_VECTOR
+__interrupt void USCI0TX_ISR(void)
+{
+    UCA0TXBUF = txBuffer[i++];                 // TX next character
+
+    if (i == sizeof txBuffer - 1)              // TX over?
+        IE2 &= ~UCA0TXIE;                       // Disable USCI_A0 TX interrupt
+}
+
+#pragma vector=USCIAB0RX_VECTOR
+__interrupt void USCI0RX_ISR(void)
+{
+    if (UCA0RXBUF == 'u')                     // 'u' received?
+    {
+        i = 0;
+        IE2 |= UCA0TXIE;                        // Enable USCI_A0 TX interrupt
+    }
+}
+
+// Timer A0 interrupt service routine
+#pragma vector=TIMER0_A0_VECTOR
+__interrupt void Timer_A(void)
+{
+    unsigned int val;
+    P1OUT ^= 0x01;                            // Toggle P1.0
+
+    data[9] = data[8];
+    data[8] = data[7];
+    data[7] = data[6];
+    data[6] = data[5];
+    data[5] = data[4];
+    data[4] = data[3];
+    data[3] = data[2];
+    data[2] = data[1];
+    data[1] = data[0];
+    data[0] = sampleADC();
+
+    val = data[0] + data[1] + data[2] + data[3] + data[4] + data[5] + data[6]
+            + data[7] + data[8] + data[9];
+    val = val/10;
+
+
+    itoa(val);
+
+    i = 0;
+    IE2 |= UCA0TXIE;                        // Enable USCI_A0 TX interrupt
+    P1OUT ^= 0x01;                            // Toggle P1.0
+}
+
+/*
+ * Function: portInit
+ * ---------------------
+ * Initializes microcontroller registers and configures ADC
+ */
+void portInit(void)
 {
     WDTCTL = WDTPW + WDTHOLD;                       // Stop WDT
     if (CALBC1_1MHZ == 0xFF)                        // If calibration constant erased
@@ -81,6 +155,8 @@ int main(void)
     DCOCTL = 0;                                     // Select lowest DCOx and MODx settings
     BCSCTL1 = CALBC1_1MHZ;                          // Set DCO
     DCOCTL = CALDCO_1MHZ;
+
+    /* Configure UART */
     P1SEL = BIT1 + BIT2;                            // P1.1 = RXD, P1.2=TXD
     P1SEL2 = BIT1 + BIT2;                           // P1.1 = RXD, P1.2=TXD
     UCA0CTL1 |= UCSSEL_2;                           // SMCLK
@@ -90,19 +166,43 @@ int main(void)
     UCA0CTL1 &= ~UCSWRST;                           // **Initialize USCI state machine**
     IE2 |= UCA0RXIE;                                // Enable USCI_A0 RX interrupt
 
-    __bis_SR_register(LPM0_bits + GIE);             // Enter LPM0, interrupts enabled
+    /* Configure GPIO */
+    P2OUT = 0x00;                                   // reset all P2 output pins to clear 7-seg
+    P2SEL &= ~BIT6;                                 // turn off XIN to enable P2.6
+    P1DIR |= 0x01;                                  // P1.0 output
+    P1OUT &= ~0x01;
+
+    /* Configure Timer */
+    TACTL = TASSEL_2 + MC_1 + ID_3;                 // SMCLK, upmode, 1Mhz/4 = 125KHz
+    CCTL0 = CCIE;                                   // CCR0 interrupt enabled
+    CCR0 = 12500-1;                                 // 2Hz = 125KHz / 62500
+
+
+    /* Configure ADC Channel */
+    P1SEL |= BIT5;                                  // set P1.5 to analog input
+    ADC10CTL1 = INCH_5 + ADC10DIV_3;                // select channel A5, ADC10CLK/3
+    ADC10CTL0 = ADC10SHT_3 + MSC + ADC10ON;         // sample/hold 64 cycle, multiple sample, turn on ADC10
+    ADC10AE0 |= BIT5;                               // enable P1.5 for analog input
+
+    __bis_SR_register(GIE);                         // interrupts enabled
 }
 
-//  Echo back RXed character, confirm TX buffer is ready first
-#if defined(__TI_COMPILER_VERSION__) || defined(__IAR_SYSTEMS_ICC__)
-#pragma vector=USCIAB0RX_VECTOR
-__interrupt void USCI0RX_ISR(void)
-#elif defined(__GNUC__)
-void __attribute__ ((interrupt(USCIAB0RX_VECTOR))) USCI0RX_ISR (void)
-#else
-#error Compiler not supported!
-#endif
-{
-    while (!(IFG2 & UCA0TXIFG));                    // USCI_A0 TX buffer ready?
-    UCA0TXBUF = UCA0RXBUF;                          // TX -> RXed character
+unsigned int sampleADC(void){
+    ADC10CTL0 |= ENC + ADC10SC; // enable and start conversion
+    while ((ADC10CTL1 & ADC10BUSY) == 0x01); // wait until sample operation is complete
+    return ADC10MEM;
+}
+
+void itoa(unsigned int num){
+
+    txBuffer[3] = (num % 10) + 48;
+    num /= 10;
+    txBuffer[2] = (num % 10) + 48;
+    num /= 10;
+    txBuffer[1] = (num % 10) + 48;
+    num /= 10;
+    txBuffer[0] = (num % 10) + 48;
+
+    txBuffer[4] = 13; // Return character
+    txBuffer[5] = 10; // New Line
 }
